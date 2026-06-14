@@ -1,0 +1,28 @@
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-dev \
+    libglib2.0-0 \
+    libgl1-mesa-glx \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+RUN apt-get update && apt-get install -y \
+    fonts-liberation2 \
+    fonts-noto-cjk \
+    fontconfig \
+    && fc-cache -f -v
+ENV PADDLE_HOME=/root/.paddle
+
+# Thêm duy nhất dòng này để nhét từ điển vào ruột thư viện
+COPY vi_dict.txt /usr/local/lib/python3.10/dist-packages/paddleocr/ppocr/utils/dict/vi_dict.txt
+COPY . .
+
+EXPOSE 8080
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]

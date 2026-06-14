@@ -1,0 +1,11 @@
+{
+    "device-config": {
+        "device": "cuda"
+    },
+    "layout-config": {
+        "model": "doc_layout_yolo"
+    },
+    "formula-config": {
+        "model": "mfd_yolo"
+    }
+}

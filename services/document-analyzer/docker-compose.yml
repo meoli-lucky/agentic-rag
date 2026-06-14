@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  layout-detector:
+    build: .
+    container_name: ai_layout_service
+    restart: unless-stopped
+    ports:
+      - "8500:8500"
+    networks:
+      - rag_net # Gắn vào mạng chung
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=document_storage
+      - MINIO_SECRET_KEY=document_storage_password_123
+      - MINIO_SECURE=False
+    volumes:
+      # Map thư mục I/O ra ngoài máy host để dễ dàng debug và dọn dẹp
+      - ./input:/app/input
+      - ./output:/app/output
+      
+    shm_size: '8gb' # Shared memory lớn để tải batch ảnh PDF mượt mà
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - minio # Đảm bảo MinIO khởi chạy trước API
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: document_storage
+    environment:
+      MINIO_ROOT_USER: document_storage
+      MINIO_ROOT_PASSWORD: document_storage_password_123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API Port
+      - "9001:9001" # Web Console Port
+    volumes:
+      - minio_data:/data
+    networks:
+      - rag_net # Gắn vào mạng chung
+    restart: unless-stopped
+
+# Định nghĩa Custom Network để các container giao tiếp qua hostname
+networks:
+  rag_net:
+    driver: bridge
+
+# Định nghĩa Volume để dữ liệu MinIO không bị mất khi container restart
+volumes:
+  minio_data:

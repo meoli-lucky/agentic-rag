@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: paddleocr-llama-server
+    ports:
+      - "8300:8080" # Đã sửa cổng máy host thành 8300
+    volumes:
+      - ./models:/models
+    command: >
+      -m /models/PaddleOCR-VL-1.6.Q8_0.gguf
+      --host 0.0.0.0
+      --port 8080
+      -c 4096
+      -ngl 99
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

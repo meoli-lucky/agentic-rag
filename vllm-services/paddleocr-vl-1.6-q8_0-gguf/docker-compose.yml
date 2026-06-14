@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  paddleocr-vl-1.6-q8_0-gguf:
+    build: .
+    container_name: paddleocr-vl-1.6-q8_0-gguf
+    volumes:
+      # Cache model lại máy host, tránh tải lại khi restart container
+      - ~/.cache/llama.cpp:/root/.cache/llama.cpp
+    ports:
+      - "8300:8300"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

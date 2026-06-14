@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+python-multipart
+pymupdf
+doclayout-yolo
+huggingface-hub
+minio==7.2.5
