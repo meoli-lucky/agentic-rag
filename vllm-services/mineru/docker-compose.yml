@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  mineru-api:
+    build: .
+    container_name: mineru-api-service
+    runtime: nvidia
+    restart: unless-stopped
+    shm_size: '2gb'
+    ports:
+      - "8100:8100"
+    ipc: host
+    environment:
+      - MINERU_MODEL_SOURCE=local
+      - VLLM_GPU_MEMORY_UTILIZATION=0.5
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - CUDA_VISIBLE_DEVICES=1
+      - NVIDIA_VISIBLE_DEVICES=1
+    volumes:
+      - .:/workspace
+      - ./magic-pdf.json:/root/magic-pdf.json
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    networks:
+      - default
+
+networks:
+  default:
+    name: vllm-net

@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  paddleocr-vl-1.5:
+    build: .
+    container_name: paddleocr-vl-1.5-service
+    runtime: nvidia
+    restart: unless-stopped
+    ports:
+      - "8300:8300"
+    ipc: host
+    environment:
+      - CUDA_VISIBLE_DEVICES=1
+      - NVIDIA_VISIBLE_DEVICES=1
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '1' ]
+              capabilities: [ gpu ]
+    networks:
+      - default
+
+networks:
+  default:
+    name: vllm-net

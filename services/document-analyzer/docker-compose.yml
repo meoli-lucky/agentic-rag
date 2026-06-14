@@ -18,15 +18,15 @@ services:
       # Map thư mục I/O ra ngoài máy host để dễ dàng debug và dọn dẹp
       - ./input:/app/input
       - ./output:/app/output
-      
+
     shm_size: '8gb' # Shared memory lớn để tải batch ảnh PDF mượt mà
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+              count: all
+              capabilities: [ gpu ]
     depends_on:
       - minio # Đảm bảo MinIO khởi chạy trước API
 

@@ -1,0 +1,126 @@
+version: '3.8'
+
+services:
+  # 1. Qwen 2.5 3B Instruct Service running on GPU 0
+  qwen2.5-3b:
+    image: vllm/vllm-openai:latest
+    container_name: qwen2.5-3b-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    ipc: host
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      Qwen/Qwen2.5-3B-Instruct --max-model-len 4096 --max-num-seqs 2 --gpu-memory-utilization 0.75 --dtype float16
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '0' ]
+              capabilities: [ gpu ]
+    networks:
+      - rag_net
+
+  # 2. Paddle OCR VL Service
+  paddleocr-llama:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: paddleocr-llama-service
+    restart: unless-stopped
+    ports:
+      - "8300:8080"
+    volumes:
+      - ./llama-services/paddle-ocr-vl/models:/models
+    command: >
+      -m /models/PaddleOCR-VL-1.6.Q8_0.gguf --host 0.0.0.0 --port 8080 -c 4096 -ngl 99
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    networks:
+      - rag_net
+
+  # 3. Layout Detector Service
+  document-analyzer:
+    build: ./services/document-analyzer
+    container_name: document-analyzer-service
+    restart: unless-stopped
+    ports:
+      - "8500:8500"
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=document_storage
+      - MINIO_SECRET_KEY=document_storage_password_123
+      - MINIO_SECURE=False
+    volumes:
+      - ./services/document-analyzer/input:/app/input
+      - ./services/document-analyzer/output:/app/output
+    shm_size: '8gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    depends_on:
+      - minio
+    networks:
+      - rag_net
+
+  # 4. MinIO S3 Storage Service
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio-storage-service
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: document_storage
+      MINIO_ROOT_PASSWORD: document_storage_password_123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - rag_net
+
+  # 5. MinerU API Service running on GPU 1
+  mineru-api:
+    build: ./vllm-services/mineru
+    container_name: mineru-api-service
+    restart: unless-stopped
+    shm_size: '2gb'
+    ports:
+      - "8100:8100"
+    ipc: host
+    environment:
+      - MINERU_MODEL_SOURCE=local
+      - VLLM_GPU_MEMORY_UTILIZATION=0.5
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - CUDA_VISIBLE_DEVICES=1
+    volumes:
+      - ./vllm-services/mineru:/workspace
+      - ./vllm-services/mineru/magic-pdf.json:/root/magic-pdf.json
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '1' ]
+              capabilities: [ gpu ]
+    networks:
+      - rag_net
+
+networks:
+  rag_net:
+    driver: bridge
+
+volumes:
+  minio_data:
