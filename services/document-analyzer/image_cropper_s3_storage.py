@@ -30,7 +30,7 @@ class ImageCropperS3:
             final_item = {
                 "page": page_num,
                 "index": index,
-                **element,             # Bên trong element này đã chứa sẵn extracted_text (nếu có)
+                **element,             # Bên trong element này đã chứa sẵn content (nếu có)
                 "file_path": minio_url # Luôn luôn trả về đường dẫn ảnh cho Frontend
             }
             final_elements.append(final_item)

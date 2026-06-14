@@ -14,6 +14,12 @@ services:
       - MINIO_ACCESS_KEY=document_storage
       - MINIO_SECRET_KEY=document_storage_password_123
       - MINIO_SECURE=False
+      - LLM_OCR_ENDPOINT=http://host.docker.internal:8300/v1/chat/completions
+      - LLM_OCR_MODEL=paddleocr
+      - LLM_OCR_TEMPERATURE=0.1
+      - LLM_OCR_MAX_TOKENS=4096
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Map thư mục I/O ra ngoài máy host để dễ dàng debug và dọn dẹp
       - ./input:/app/input

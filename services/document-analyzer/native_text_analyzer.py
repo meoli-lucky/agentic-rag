@@ -19,11 +19,11 @@ class NativeTextAnalyzer:
             y_max / self.scale_factor
         )
         
-        extracted_text = page.get_textbox(pdf_rect).strip()
+        text = page.get_textbox(pdf_rect).strip()
         
-        if len(extracted_text) > 0:
-            return "true", extracted_text
-        return "false", None
+        if len(text) > 0:
+            return "true", text
+        return "false", ""
 
     def analyze(self, page: fitz.Page, elements, check_enabled: bool):
         """
@@ -32,10 +32,10 @@ class NativeTextAnalyzer:
         for element in elements:
             if not check_enabled:
                 element["digital_text"] = "unverified"
-                element["extracted_text"] = None
+                element["content"] = ""
             else:
                 is_digital, native_text = self._check_bbox_content(page, element["bbox"])
                 element["digital_text"] = is_digital
-                element["extracted_text"] = native_text
+                element["content"] = native_text if native_text else ""
                 
         return elements

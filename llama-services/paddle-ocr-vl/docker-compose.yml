@@ -9,16 +9,12 @@ services:
     volumes:
       - ./models:/models
     command: >
-      -m /models/PaddleOCR-VL-1.6.Q8_0.gguf
-      --host 0.0.0.0
-      --port 8080
-      -c 4096
-      -ngl 99
+      -m /models/PaddleOCR-VL-1.6.Q8_0.gguf --mmproj /models/PaddleOCR-VL-1.6-GGUF-mmproj.gguf --host 0.0.0.0 --port 8080 -c 8192 -ngl 99 -fa on -np 3
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
+              capabilities: [ gpu ]
     restart: unless-stopped
