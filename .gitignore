@@ -1,1 +1,2 @@
-llama-services/paddle-ocr-vl/models/
+llama-services/paddle-ocr-vl/models/*
+.DS_Store
