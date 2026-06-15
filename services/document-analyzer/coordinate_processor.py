@@ -140,59 +140,36 @@ class CoordinateProcessor:
             return self.sort_spatial(dedup_elements)
             
         return dedup_elements
-        
-    def merge_duplicates(self, elements, merge_suspicion):
-        """
-        Lọc box chồng lấp (IoU > threshold). 
-        Nếu merge_suspicion=True, lưu box bị loại vào mảng 'suspicion' của box giữ lại.
-        """
-        filtered = []
-        # Ưu tiên confidence cao nhất làm box "Chủ"
-        elements.sort(key=lambda x: x['confidence'], reverse=True)
 
-        for current_item in elements:
-            is_duplicate = False
-            for kept_item in filtered:
-                # Nếu phát hiện chồng lấp tọa độ (Identity Crisis)
-                if self.compute_iou(current_item['bbox'], kept_item['bbox']) > self.iou_threshold:
-                    is_duplicate = True
-                    
-                    # LOGIC GỘP NGHI VẤN
-                    if merge_suspicion:
-                        if "suspicion" not in kept_item:
-                            kept_item["suspicion"] = []
-                            
-                        # Nhét thông tin của box thấp điểm hơn vào mảng suspicion
-                        kept_item["suspicion"].append({
-                            "label": current_item["label"],
-                            "predicted_tag": current_item.get("predicted_tag", "unknown"),
-                            "confidence": current_item["confidence"]
-                        })
-                    break
+    def recalculate_line_heights(self, elements):
+        """
+        Tính toán lại line_height dựa trên văn bản thực tế sau khi OCR/trích xuất.
+        Sử dụng công thức hình học để ước lượng số dòng một cách chuẩn xác.
+        Không thay đổi label hay predicted_tag của YOLO.
+        """
+        import math
+        for el in elements:
+            content = el.get("content", "")
+            char_count = len(content) if content else 0
             
-            # Nếu là box mới (Không bị đè)
-            if not is_duplicate:
-                if merge_suspicion:
-                    current_item["suspicion"] = [] # Khởi tạo mảng rỗng cho box chuẩn
-                filtered.append(current_item)
+            box_height = el.get("box_height")
+            if box_height is None:
+                box_height = el["bbox"][3] - el["bbox"][1]
+            box_width = el.get("box_width")
+            if box_width is None:
+                box_width = el["bbox"][2] - el["bbox"][0]
                 
-        return filtered
-    def process(self, raw_elements, sort_type, remove_header, merge_suspicion):
-        """Pipeline xử lý tọa độ chính"""
-        # 1. Lọc rác Header (Nếu yêu cầu)
-        if remove_header:
-            raw_elements = [el for el in raw_elements if el["label"] != "Page-header"]
+            # Ước lượng số dòng dựa trên hình học & số lượng ký tự (bỏ hoàn toàn việc dựa vào \n từ VLM)
+            row_count = 1
+            if char_count > 0 and box_width > 0:
+                row_count = max(1, round(math.sqrt(0.35 * char_count * (box_height / box_width))))
             
-        # 2. Làm giàu dữ liệu (Tính Tags, Line height TRƯỚC khi gộp)
-        tagged_elements = self.calculate_metrics_and_tags(raw_elements)
+            line_height = round(box_height / (3.0 * row_count) - (row_count if row_count > 1 else 0), 2)
+            line_height = max(0.0, line_height)
             
-        # 3. Gộp các hộp bị Identity Crisis (De-duplication & Suspicion Merge)
-        dedup_elements = self.merge_duplicates(tagged_elements, merge_suspicion)
-        
-        # 4. Sắp xếp không gian
-        if sort_type == "coordinates":
-            return self.sort_spatial(dedup_elements)
+            el["line_height"] = line_height
+            el["estimated_lines"] = row_count
             
-        return dedup_elements
+        return elements
 
     

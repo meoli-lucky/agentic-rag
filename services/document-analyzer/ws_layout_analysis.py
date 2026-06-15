@@ -270,7 +270,7 @@ async def ws_layout_analysis(websocket: WebSocket):
                     ocr_mode = "smart" if smart_ocr else "regular"
 
                     if smart_ocr:
-                        chunk_size = len(ocr_crops) if is_pdf else 10
+                        chunk_size = _smart_ocr_svc.chunk_size
                         total_chunks = (len(ocr_crops) + chunk_size - 1) // chunk_size
                         await _progress(websocket,
                                         step=6, step_name="OCR Started (Smart)",
@@ -316,6 +316,9 @@ async def ws_layout_analysis(websocket: WebSocket):
                                     step=6, step_name="OCR Skipped",
                                     message=f"Page {page_idx}: No non-digital crops — OCR skipped",
                                     page=page_idx, total_pages=total_pages)
+
+                # Tính toán lại line_height dựa trên text thực tế sau khi có kết quả OCR/Native Text
+                processed_elements = _coord_processor.recalculate_line_heights(processed_elements)
 
                 # ── Bước 7: Crop & Store thumbnails (non-blocking) ────────
                 t0 = time.time()

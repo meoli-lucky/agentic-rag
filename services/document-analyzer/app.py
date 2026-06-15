@@ -158,6 +158,9 @@ async def layout_analysis(
                     is_pdf=doc.is_pdf
                 )
             
+            # Tính toán lại line_height dựa trên text thực tế sau khi có kết quả OCR/Native Text
+            processed_elements = coord_processor.recalculate_line_heights(processed_elements)
+            
             # --- 3. ĐỊNH TUYẾN I/O THEO STORAGE_TYPE ---
             if storage_type == "s3":
                 final_page_elements = cropper_s3.crop_and_upload(

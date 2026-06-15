@@ -7,6 +7,7 @@ import os
 class SmartOcrService:
     def __init__(self, llm_ocr_svc):
         self.llm_ocr_svc = llm_ocr_svc
+        self.chunk_size = 4
 
     def ensure_bgr(self, img):
         if len(img.shape) == 2:
@@ -23,11 +24,10 @@ class SmartOcrService:
         padded[0:h, 0:w] = img
         return padded
 
-    def create_divider_image(self, width, bbox, height=60):
+    def create_divider_image(self, width, idx, height=60):
         # Tạo ảnh phân tách màu trắng
         divider = np.ones((height, width, 3), dtype=np.uint8) * 255
-        x1, y1, x2, y2 = bbox
-        text = f"[bbox][{x1},{y1},{x2},{y2}]"
+        text = f"[box_{idx}]"
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.8
         thickness = 2
@@ -52,51 +52,84 @@ class SmartOcrService:
         if not ocr_text:
             return
             
-        # Regex tìm kiếm tag [bbox][x1,y1,x2,y2]
-        # Cho phép khoảng trắng linh hoạt đề phòng LLM OCR tự thêm khoảng trắng
-        pattern = r'\[\s*bbox\s*\]\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]'
-        
-        parts = re.split(pattern, ocr_text)
-        # parts sẽ có cấu trúc: [text_truoc_tag_dau_tien, x1, y1, x2, y2, text_1, x1', y1', ...]
-        
-        bbox_contents = {}
-        parsed_ordered_texts = []
-        
-        first_segment = parts[0].strip()
-        
-        i = 1
-        while i + 4 < len(parts):
-            x1 = parts[i].strip()
-            y1 = parts[i+1].strip()
-            x2 = parts[i+2].strip()
-            y2 = parts[i+3].strip()
-            text_content = parts[i+4].strip()
+        # 1. Thử khớp theo tag index: [box_N], [box-N], [box N], [boxN] hoặc [box_end]
+        index_pattern = r'\[\s*box[_\s-]*(\d+|end)\s*\]'
+        if re.search(index_pattern, ocr_text):
+            parts = re.split(index_pattern, ocr_text)
+            first_segment = parts[0].strip()
+            index_contents = {}
+            parsed_ordered_texts = []
             
-            bbox_key = f"{x1},{y1},{x2},{y2}"
-            bbox_contents[bbox_key] = text_content
-            parsed_ordered_texts.append(text_content)
-            
-            i += 5
-            
-        # Ánh xạ nội dung về cho từng element
-        for idx, el in enumerate(elements_chunk):
-            bbox = el.get("bbox")
-            if not bbox or len(bbox) < 4:
-                continue
-            key = f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
-            
-            if key in bbox_contents:
-                el["content"] = bbox_contents[key]
-            else:
-                # Fallback: Nếu không khớp key tuyệt đối, dùng thứ tự xuất hiện
-                # Nếu là phần tử đầu tiên (idx == 0) và có text trước tag đầu tiên, dùng nó
-                if idx == 0 and first_segment:
-                    el["content"] = first_segment
+            i = 1
+            while i + 1 < len(parts):
+                idx_str = parts[i].strip()
+                text_content = parts[i+1].strip()
+                if idx_str == 'end':
+                    i += 2
+                    continue
+                try:
+                    idx_val = int(idx_str)
+                    index_contents[idx_val] = text_content
+                except ValueError:
+                    pass
+                parsed_ordered_texts.append(text_content)
+                i += 2
+                
+            for idx, el in enumerate(elements_chunk):
+                if idx in index_contents:
+                    el["content"] = index_contents[idx]
                 else:
-                    # Các phần tử tiếp theo ánh xạ theo thứ tự xuất hiện của các phần nội dung đã parsed
-                    fallback_idx = idx if not first_segment else idx - 1
-                    if 0 <= fallback_idx < len(parsed_ordered_texts):
-                        el["content"] = parsed_ordered_texts[fallback_idx]
+                    # Fallback: Dùng thứ tự xuất hiện
+                    if idx == 0 and first_segment:
+                        el["content"] = first_segment
+                    else:
+                        fallback_idx = idx if not first_segment else idx - 1
+                        if 0 <= fallback_idx < len(parsed_ordered_texts):
+                            el["content"] = parsed_ordered_texts[fallback_idx]
+            return
+
+        # 2. Thử khớp theo tag tọa độ (tương thích ngược nếu VLM dùng bản cũ hoặc ảnh cũ): [bbox][x1,y1,x2,y2]
+        bbox_pattern = r'\[\s*bbox\s*\]\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]'
+        if re.search(bbox_pattern, ocr_text):
+            parts = re.split(bbox_pattern, ocr_text)
+            first_segment = parts[0].strip()
+            bbox_contents = {}
+            parsed_ordered_texts = []
+            
+            i = 1
+            while i + 4 < len(parts):
+                x1 = parts[i].strip()
+                y1 = parts[i+1].strip()
+                x2 = parts[i+2].strip()
+                y2 = parts[i+3].strip()
+                text_content = parts[i+4].strip()
+                
+                bbox_key = f"{x1},{y1},{x2},{y2}"
+                bbox_contents[bbox_key] = text_content
+                parsed_ordered_texts.append(text_content)
+                i += 5
+                
+            for idx, el in enumerate(elements_chunk):
+                bbox = el.get("bbox")
+                if not bbox or len(bbox) < 4:
+                    continue
+                key = f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
+                if key in bbox_contents:
+                    el["content"] = bbox_contents[key]
+                else:
+                    if idx == 0 and first_segment:
+                        el["content"] = first_segment
+                    else:
+                        fallback_idx = idx if not first_segment else idx - 1
+                        if 0 <= fallback_idx < len(parsed_ordered_texts):
+                            el["content"] = parsed_ordered_texts[fallback_idx]
+            return
+
+        # 3. Fallback cuối cùng: Tách theo các kí tự phân tách tĩnh như [$$$$$]
+        splits = self.split_ocr_text(ocr_text, len(elements_chunk))
+        for idx, el in enumerate(elements_chunk):
+            if idx < len(splits):
+                el["content"] = splits[idx]
 
     def split_ocr_text(self, ocr_text, num_expected):
         # Hàm cũ để giữ tương thích ngược nếu cần gọi ở đâu đó (nhưng chúng ta đã thay thế trong run_ocr)
@@ -122,9 +155,8 @@ class SmartOcrService:
             
         import time
         if smart_ocr:
-            # Nếu là PDF, ghép tất cả ảnh nhỏ trên trang thành 1 ảnh ghép.
-            # Nếu là ảnh (không có số trang), gom nhóm 10 ảnh nhỏ làm 1 ảnh ghép.
-            chunk_size = len(ocr_crops) if is_pdf else 10
+            # Giới hạn số lượng ảnh ghép mỗi chunk để tránh VLM nén ảnh làm mờ nét chữ
+            chunk_size = self.chunk_size
             
             for chunk_idx in range(0, len(ocr_crops), chunk_size):
                 crops_chunk = ocr_crops[chunk_idx:chunk_idx + chunk_size]
@@ -135,19 +167,26 @@ class SmartOcrService:
                 max_width = max(max_width, 600)
                 stacked_list = []
                 for idx, (img, el) in enumerate(zip(crops_chunk, elements_chunk)):
-                    bbox = el.get("bbox", [0, 0, 0, 0])
-                    # Chèn divider chứa toạ độ của crop này ngay phía trước nó
-                    stacked_list.append(self.create_divider_image(max_width, bbox))
+                    # Chèn divider chứa index của crop này ngay phía trước nó
+                    stacked_list.append(self.create_divider_image(max_width, idx))
                     
                     padded_img = self.pad_image_to_width(img, max_width)
                     stacked_list.append(padded_img)
+                
+                # Chèn thêm một divider kết thúc ở cuối cùng để giữ cấu trúc cho crop cuối
+                stacked_list.append(self.create_divider_image(max_width, "end", height=40))
                 
                 stacked_image = np.vstack(stacked_list)
                 
                 # Định dạng tên file lưu trữ tương ứng
                 part_num = (chunk_idx // chunk_size) + 1
                 if is_pdf:
-                    filename = f"page{page_num}_stacked.jpg"
+                    # Nếu tổng số crops của trang nhỏ hơn chunk_size thì dùng tên page mặc định,
+                    # ngược lại thêm part_num để tránh ghi đè file giữa các chunk của cùng một page.
+                    if len(ocr_crops) <= chunk_size:
+                        filename = f"page{page_num}_stacked.jpg"
+                    else:
+                        filename = f"page{page_num}_stacked_part{part_num}.jpg"
                 else:
                     filename = f"page{page_num}_stacked_part{part_num}.jpg"
                 
@@ -166,7 +205,8 @@ class SmartOcrService:
                     start_time = time.time()
                     base64_str = base64.b64encode(image_bytes).decode('utf-8')
                     ocr_text = self.llm_ocr_svc.request_ocr(base64_str, is_local=False, is_base64=True)
-                    print(f"[Smart OCR] Chunk {part_num} (page {page_num}) took {time.time() - start_time:.2f}s, size: {stacked_image.shape}, crops: {len(crops_chunk)}")
+                    h, w = stacked_image.shape[:2]
+                    print(f"[Smart OCR] Chunk {part_num} (page {page_num}) took {time.time() - start_time:.2f}s, image size: {w}x{h} (width x height), crops: {len(crops_chunk)}")
                     
                     # Phân tách và gán nội dung dựa trên bbox
                     self.split_ocr_text_by_bbox(ocr_text, elements_chunk)
