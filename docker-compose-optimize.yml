@@ -35,7 +35,7 @@ services:
     volumes:
       - ./llama-services/paddle-ocr-vl/models:/models
     command: >
-      -m /models/PaddleOCR-VL-1.6.Q8_0.gguf --mmproj /models/PaddleOCR-VL-1.6-GGUF-mmproj.gguf --host 0.0.0.0 --port 8080 -c 8192 -ngl 99 -fa on -np 3
+      -m /models/PaddleOCR-VL-1.6.Q4_K_M.gguf --mmproj /models/PaddleOCR-VL-1.6-GGUF-mmproj.gguf --host 0.0.0.0 --port 8080 -c 6144 -ngl 99 -fa on -np 2
     deploy:
       resources:
         reservations:
@@ -62,6 +62,7 @@ services:
       - LLM_OCR_MODEL=paddleocr
       - LLM_OCR_TEMPERATURE=0.1
       - LLM_OCR_MAX_TOKENS=4096
+      - OCR_MAX_THREADS=2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -96,34 +97,6 @@ services:
       - minio_data:/data
     networks:
       - rag_net
-
-  # 5. MinerU API Service running on GPU 1
-  mineru-api:
-    build: ./vllm-services/mineru
-    container_name: mineru-api-service
-    restart: unless-stopped
-    shm_size: '2gb'
-    ports:
-      - "8100:8100"
-    ipc: host
-    environment:
-      - MINERU_MODEL_SOURCE=local
-      - VLLM_GPU_MEMORY_UTILIZATION=0.5
-      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
-      - CUDA_VISIBLE_DEVICES=1
-    volumes:
-      - ./vllm-services/mineru:/workspace
-      - ./vllm-services/mineru/magic-pdf.json:/root/magic-pdf.json
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '1' ]
-              capabilities: [ gpu ]
-    networks:
-      - rag_net
-
 networks:
   rag_net:
     driver: bridge

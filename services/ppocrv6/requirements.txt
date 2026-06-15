@@ -1,0 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
+paddlepaddle-gpu==2.6.1
+paddleocr[all]>=2.7.3
+transformers
+torch
+torchvision
+torchaudio
+opencv-python-headless
+numpy

@@ -3,11 +3,13 @@ import numpy as np
 import base64
 import re
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 class SmartOcrService:
     def __init__(self, llm_ocr_svc):
         self.llm_ocr_svc = llm_ocr_svc
         self.chunk_size = 4
+        self.max_threads = int(os.getenv("OCR_MAX_THREADS", "3"))
 
     def ensure_bgr(self, img):
         if len(img.shape) == 2:
@@ -154,9 +156,14 @@ class SmartOcrService:
             return
             
         import time
+
+        max_workers = self.max_threads
+        print(f"[OCR] Starting OCR for page {page_num} with max_threads={max_workers} (smart_ocr={smart_ocr})")
+
         if smart_ocr:
             # Giới hạn số lượng ảnh ghép mỗi chunk để tránh VLM nén ảnh làm mờ nét chữ
             chunk_size = self.chunk_size
+            tasks = []
             
             for chunk_idx in range(0, len(ocr_crops), chunk_size):
                 crops_chunk = ocr_crops[chunk_idx:chunk_idx + chunk_size]
@@ -190,8 +197,27 @@ class SmartOcrService:
                 else:
                     filename = f"page{page_num}_stacked_part{part_num}.jpg"
                 
-                success, buffer = cv2.imencode(".jpg", stacked_image)
-                if success:
+                tasks.append({
+                    "stacked_image": stacked_image,
+                    "elements_chunk": elements_chunk,
+                    "crops_chunk": crops_chunk,
+                    "filename": filename,
+                    "part_num": part_num
+                })
+
+            def process_chunk(task):
+                try:
+                    stacked_image = task["stacked_image"]
+                    elements_chunk = task["elements_chunk"]
+                    crops_chunk = task["crops_chunk"]
+                    filename = task["filename"]
+                    part_num = task["part_num"]
+                    
+                    success, buffer = cv2.imencode(".jpg", stacked_image)
+                    if not success:
+                        print(f"[Smart OCR] Failed to encode stacked image for chunk {part_num}")
+                        return
+                    
                     image_bytes = buffer.tobytes()
                     if storage_type == "s3" and minio_svc:
                         object_path = minio_svc.build_object_path(user_id, conv_id, doc_id, filename)
@@ -210,15 +236,42 @@ class SmartOcrService:
                     
                     # Phân tách và gán nội dung dựa trên bbox
                     self.split_ocr_text_by_bbox(ocr_text, elements_chunk)
+                except Exception as e:
+                    print(f"[Smart OCR] Error processing chunk {task.get('part_num')}: {e}")
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                executor.map(process_chunk, tasks)
+
         else:
             # Luồng cũ: gọi OCR riêng cho từng ảnh nhỏ
-            print(f"[Regular OCR] Starting OCR for {len(ocr_crops)} crops sequentially...")
+            print(f"[Regular OCR] Starting OCR for {len(ocr_crops)} crops concurrently with {max_workers} threads...")
+            tasks = []
             for idx, (el, crop_img) in enumerate(zip(ocr_elements, ocr_crops)):
-                start_time = time.time()
-                success, buffer = cv2.imencode(".jpg", crop_img)
-                if success:
+                tasks.append({
+                    "idx": idx,
+                    "el": el,
+                    "crop_img": crop_img
+                })
+
+            def process_crop(task):
+                try:
+                    idx = task["idx"]
+                    el = task["el"]
+                    crop_img = task["crop_img"]
+                    
+                    success, buffer = cv2.imencode(".jpg", crop_img)
+                    if not success:
+                        print(f"[Regular OCR] Failed to encode crop {idx+1}")
+                        return
+                    
                     image_bytes = buffer.tobytes()
+                    start_time = time.time()
                     base64_str = base64.b64encode(image_bytes).decode('utf-8')
                     ocr_text = self.llm_ocr_svc.request_ocr(base64_str, is_local=False, is_base64=True)
                     el["content"] = ocr_text if ocr_text else ""
                     print(f"[Regular OCR] Crop {idx+1}/{len(ocr_crops)} took {time.time() - start_time:.2f}s, size: {crop_img.shape}")
+                except Exception as e:
+                    print(f"[Regular OCR] Error processing crop {task.get('idx')}: {e}")
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                executor.map(process_crop, tasks)
