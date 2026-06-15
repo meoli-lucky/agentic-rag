@@ -262,10 +262,187 @@ Với mỗi item trong final_page_elements:
 }
 ```
 
+---
+
+## 9. WebSocket API: `/ws/layout-analysis`
+
+Endpoint WebSocket cung cấp **real-time progress** trong suốt quá trình xử lý.
+Tất cả logic xử lý giống hệt `/api/v1/layout-analysis`.
+
+### 9.1 Kết nối
+
 ```
-storage_type == "s3" ?
-    ├── YES → MinIO: <user>/<conv>/<doc>/layout_analysis_result.json
-    └── NO  → /app/output/<request_id>/layout_analysis_result.json
+ws://<host>:<port>/ws/layout-analysis
+```
+
+### 9.2 Protocol
+
+#### Bước 1 — Client gửi (1 lần, ngay sau khi connect)
+
+```json
+{
+  "file_b64":           "<base64 encoded PDF/image bytes>",
+  "x_user_id":          "user-uuid",
+  "x_conversation_id":  "conv-id",
+  "x_document_id":      "doc-id",
+  "storage_type":       "s3",
+  "confidence_threshold": 0.25,
+  "sort":               "coordinates",
+  "show_height":        false,
+  "show_width":         false,
+  "remove_page_header": false,
+  "merge_suspicion":    true,
+  "check_digital_text": true,
+  "doc_recognizer":     true,
+  "table_recognizer":   true,
+  "smart_ocr":          true
+}
+```
+
+#### Bước 2 — Server stream progress events
+
+Server gửi nhiều frames JSON, mỗi frame là một bước hoàn thành:
+
+```json
+{
+  "event":       "progress",
+  "step":        <int>,
+  "step_name":   "<tên bước>",
+  "page":        <int | null>,
+  "total_pages": <int | null>,
+  "message":     "<mô tả ngắn>",
+  "data":        { ... }
+}
+```
+
+#### Bước 3 — Server gửi kết quả cuối
+
+```json
+{
+  "event":  "complete",
+  "result": { <full JSON payload giống REST API> }
+}
+```
+
+#### Lỗi
+
+```json
+{
+  "event":   "error",
+  "message": "<mô tả lỗi>"
+}
+```
+
+### 9.3 Bảng Progress Events
+
+| `step` | `step_name`              | Khi nào phát ra                                      | `data` fields                                              |
+|:------:|--------------------------|------------------------------------------------------|-------------------------------------------------------------|
+| 0      | Normalize Params         | Sau khi parse tham số & ghi đè `check_digital_text`  | –                                                          |
+| 0      | File Opened              | Sau khi mở PDF / ảnh thành công                      | `total_pages`, `is_pdf`                                    |
+| 1      | Page Render              | Sau khi render mỗi page → `img_bgr`                  | `width`, `height`, `elapsed_s`                             |
+| 2      | Layout Detection         | Sau khi YOLO detect xong 1 page                      | `boxes`, `labels` (dict count/label), `elapsed_s`          |
+| 3      | Coordinate Processing    | Sau khi dedup + sort xong                            | `elements_after`, `elapsed_s`                              |
+| 4      | Native Text Extraction   | Sau `NativeTextAnalyzer.analyze()`                   | `digital`, `needs_ocr`, `unverified`, `elapsed_s`          |
+| 5      | OCR Crop Preparation     | Sau khi xác định danh sách crops cần OCR             | `ocr_crops`, `elapsed_s`                                   |
+| 6      | OCR Started (Smart)      | Trước khi bắt đầu Smart OCR                          | `mode`, `crops`, `chunks`, `chunk_size`                    |
+| 6      | OCR Started (Regular)    | Trước khi bắt đầu Regular OCR                        | `mode`, `crops`                                            |
+| 6      | OCR Complete             | Sau khi OCR xong toàn bộ crops của page              | `mode`, `crops`, `elapsed_s`                               |
+| 6      | OCR Skipped              | Khi không có crop nào cần OCR                        | –                                                          |
+| 7      | Thumbnail Storage        | Sau khi lưu xong ảnh crop lên S3/local               | `stored`, `storage`, `elapsed_s`                           |
+| 8      | Page Complete            | Kết thúc xử lý 1 page                                | `elements_on_page`                                         |
+| 9      | Saving Result JSON       | Trước khi ghi JSON kết quả                           | –                                                          |
+| 9      | Result Saved             | Sau khi ghi xong JSON                                | `result_file_url`, `total_elements`, `total_crops`         |
+
+### 9.4 Ví dụ client Python
+
+```python
+import asyncio
+import base64
+import json
+import websockets
+
+async def analyze_document(file_path: str):
+    with open(file_path, "rb") as f:
+        file_b64 = base64.b64encode(f.read()).decode()
+
+    params = {
+        "file_b64":           file_b64,
+        "x_user_id":          "user-001",
+        "x_conversation_id":  "conv-001",
+        "x_document_id":      "doc-001",
+        "storage_type":       "local",
+        "smart_ocr":          True,
+        "doc_recognizer":     True,
+    }
+
+    async with websockets.connect("ws://localhost:8000/ws/layout-analysis") as ws:
+        await ws.send(json.dumps(params))
+
+        async for message in ws:
+            frame = json.loads(message)
+            event = frame["event"]
+
+            if event == "progress":
+                page_info = f"[Page {frame['page']}/{frame['total_pages']}]" if frame.get("page") else ""
+                print(f"[Step {frame['step']}] {frame['step_name']} {page_info} — {frame['message']}")
+
+            elif event == "complete":
+                print(f"\n✅ Done! Total elements: {len(frame['result']['data'])}")
+                print(f"Result saved at: {frame['result']['result_file_url']}")
+                break
+
+            elif event == "error":
+                print(f"❌ Error: {frame['message']}")
+                break
+
+asyncio.run(analyze_document("document.pdf"))
+```
+
+### 9.5 Ví dụ client JavaScript (Browser)
+
+```javascript
+const fileInput = document.getElementById('fileInput');
+const file = fileInput.files[0];
+
+const reader = new FileReader();
+reader.onload = async (e) => {
+  const fileB64 = btoa(
+    new Uint8Array(e.target.result).reduce((d, b) => d + String.fromCharCode(b), '')
+  );
+
+  const ws = new WebSocket('ws://localhost:8000/ws/layout-analysis');
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({
+      file_b64:           fileB64,
+      x_user_id:          'user-001',
+      x_conversation_id:  'conv-001',
+      x_document_id:      'doc-001',
+      storage_type:       'local',
+      smart_ocr:          true,
+      doc_recognizer:     true,
+    }));
+  };
+
+  ws.onmessage = (msg) => {
+    const frame = JSON.parse(msg.data);
+
+    if (frame.event === 'progress') {
+      console.log(`[Step ${frame.step}] ${frame.step_name} — ${frame.message}`);
+      // Cập nhật UI progress bar...
+
+    } else if (frame.event === 'complete') {
+      console.log('✅ Complete!', frame.result);
+      ws.close();
+
+    } else if (frame.event === 'error') {
+      console.error('❌ Error:', frame.message);
+      ws.close();
+    }
+  };
+};
+
+reader.readAsArrayBuffer(file);
 ```
 
 ---

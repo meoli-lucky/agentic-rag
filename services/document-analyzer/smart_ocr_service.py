@@ -23,21 +23,83 @@ class SmartOcrService:
         padded[0:h, 0:w] = img
         return padded
 
-    def create_divider_image(self, width, height=40):
+    def create_divider_image(self, width, bbox, height=60):
+        # Tạo ảnh phân tách màu trắng
         divider = np.ones((height, width, 3), dtype=np.uint8) * 255
-        text = "[$$$$$]"
+        x1, y1, x2, y2 = bbox
+        text = f"[bbox][{x1},{y1},{x2},{y2}]"
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1.0
+        font_scale = 0.8
         thickness = 2
         text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
         
+        # Đảm bảo chữ vừa khít chiều rộng của divider
+        if text_size[0] > width - 20:
+            font_scale = max(0.4, font_scale * (width - 20) / text_size[0])
+            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+            
         text_x = (width - text_size[0]) // 2
         text_y = (height + text_size[1]) // 2
         
         cv2.putText(divider, text, (text_x, text_y), font, font_scale, (0, 0, 0), thickness)
         return divider
 
+    def split_ocr_text_by_bbox(self, ocr_text, elements_chunk):
+        # Khởi tạo nội dung trống mặc định cho toàn bộ elements
+        for el in elements_chunk:
+            el["content"] = ""
+            
+        if not ocr_text:
+            return
+            
+        # Regex tìm kiếm tag [bbox][x1,y1,x2,y2]
+        # Cho phép khoảng trắng linh hoạt đề phòng LLM OCR tự thêm khoảng trắng
+        pattern = r'\[\s*bbox\s*\]\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]'
+        
+        parts = re.split(pattern, ocr_text)
+        # parts sẽ có cấu trúc: [text_truoc_tag_dau_tien, x1, y1, x2, y2, text_1, x1', y1', ...]
+        
+        bbox_contents = {}
+        parsed_ordered_texts = []
+        
+        first_segment = parts[0].strip()
+        
+        i = 1
+        while i + 4 < len(parts):
+            x1 = parts[i].strip()
+            y1 = parts[i+1].strip()
+            x2 = parts[i+2].strip()
+            y2 = parts[i+3].strip()
+            text_content = parts[i+4].strip()
+            
+            bbox_key = f"{x1},{y1},{x2},{y2}"
+            bbox_contents[bbox_key] = text_content
+            parsed_ordered_texts.append(text_content)
+            
+            i += 5
+            
+        # Ánh xạ nội dung về cho từng element
+        for idx, el in enumerate(elements_chunk):
+            bbox = el.get("bbox")
+            if not bbox or len(bbox) < 4:
+                continue
+            key = f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
+            
+            if key in bbox_contents:
+                el["content"] = bbox_contents[key]
+            else:
+                # Fallback: Nếu không khớp key tuyệt đối, dùng thứ tự xuất hiện
+                # Nếu là phần tử đầu tiên (idx == 0) và có text trước tag đầu tiên, dùng nó
+                if idx == 0 and first_segment:
+                    el["content"] = first_segment
+                else:
+                    # Các phần tử tiếp theo ánh xạ theo thứ tự xuất hiện của các phần nội dung đã parsed
+                    fallback_idx = idx if not first_segment else idx - 1
+                    if 0 <= fallback_idx < len(parsed_ordered_texts):
+                        el["content"] = parsed_ordered_texts[fallback_idx]
+
     def split_ocr_text(self, ocr_text, num_expected):
+        # Hàm cũ để giữ tương thích ngược nếu cần gọi ở đâu đó (nhưng chúng ta đã thay thế trong run_ocr)
         if not ocr_text:
             return [""] * num_expected
         pattern = r'\[\s*\$\s*\$\s*\$\s*\$\s*\$\s*\]|\$\s*\$\s*\$\s*\$\s*\$|\[\s*\$\s*\$\s*\$\s*\$\s*\]|\$\s*\$\s*\$\s*\$\s*'
@@ -69,12 +131,16 @@ class SmartOcrService:
                 elements_chunk = ocr_elements[chunk_idx:chunk_idx + chunk_size]
                 
                 max_width = max(img.shape[1] for img in crops_chunk)
+                # Đảm bảo max_width tối thiểu là 600px để nhãn bbox trên divider hiển thị rõ ràng
+                max_width = max(max_width, 600)
                 stacked_list = []
-                for idx, img in enumerate(crops_chunk):
+                for idx, (img, el) in enumerate(zip(crops_chunk, elements_chunk)):
+                    bbox = el.get("bbox", [0, 0, 0, 0])
+                    # Chèn divider chứa toạ độ của crop này ngay phía trước nó
+                    stacked_list.append(self.create_divider_image(max_width, bbox))
+                    
                     padded_img = self.pad_image_to_width(img, max_width)
                     stacked_list.append(padded_img)
-                    if idx < len(crops_chunk) - 1:
-                        stacked_list.append(self.create_divider_image(max_width))
                 
                 stacked_image = np.vstack(stacked_list)
                 
@@ -102,9 +168,8 @@ class SmartOcrService:
                     ocr_text = self.llm_ocr_svc.request_ocr(base64_str, is_local=False, is_base64=True)
                     print(f"[Smart OCR] Chunk {part_num} (page {page_num}) took {time.time() - start_time:.2f}s, size: {stacked_image.shape}, crops: {len(crops_chunk)}")
                     
-                    splits = self.split_ocr_text(ocr_text, len(elements_chunk))
-                    for el, text_seg in zip(elements_chunk, splits):
-                        el["content"] = text_seg
+                    # Phân tách và gán nội dung dựa trên bbox
+                    self.split_ocr_text_by_bbox(ocr_text, elements_chunk)
         else:
             # Luồng cũ: gọi OCR riêng cho từng ảnh nhỏ
             print(f"[Regular OCR] Starting OCR for {len(ocr_crops)} crops sequentially...")

@@ -1,12 +1,13 @@
 import os
 import cv2
+from utils import get_extended_bbox
 
 class ImageCropperLocal:
     def __init__(self, output_base_dir="/app/output"):
         self.output_base_dir = output_base_dir
         os.makedirs(self.output_base_dir, exist_ok=True)
 
-    def crop_and_save(self, img_matrix, elements, request_id, page_num):
+    def crop_and_save(self, img_matrix, elements, request_id, page_num, extend_border=None):
         """
         Cắt ảnh dựa trên mảng tọa độ và trả về mảng đã được đính kèm đường dẫn file
         """
@@ -14,8 +15,15 @@ class ImageCropperLocal:
         os.makedirs(current_output_dir, exist_ok=True)
         
         final_elements = []
+        img_h, img_w = img_matrix.shape[:2]
+        
         for index, element in enumerate(elements):
             x_min, y_min, x_max, y_max = element["bbox"]
+            
+            # Áp dụng mở rộng biên nếu có tùy chọn
+            if extend_border:
+                x_min, y_min, x_max, y_max = get_extended_bbox([x_min, y_min, x_max, y_max], img_h, img_w, extend_border)
+                
             lbl = element["label"]
             
             # Cắt ma trận Numpy bằng Slicing (cực nhanh)

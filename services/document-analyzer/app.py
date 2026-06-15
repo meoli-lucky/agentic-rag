@@ -11,16 +11,19 @@ import time
 from doclayout_yolo import YOLOv10
 
 from coordinate_processor import CoordinateProcessor
+from utils import get_extended_bbox
 from native_text_analyzer import NativeTextAnalyzer
 from minio_service import MinioService
 from llm_ocr_service import LlmOcrService
 from smart_ocr_service import SmartOcrService
+from ws_layout_analysis import router as ws_router, init_services as ws_init_services
 
 # Import cả 2 chiến lược lưu trữ
 from image_cropper_s3_storage import ImageCropperS3
 from image_cropper_local_storage import ImageCropperLocal
 
 app = FastAPI(title="Layout Analysis API - Multi-Storage")
+app.include_router(ws_router)
 
 # Singleton Services
 yolo_model = YOLOv10('/app/models/doclayout_yolo.pt')
@@ -33,6 +36,18 @@ smart_ocr_svc = SmartOcrService(llm_ocr_svc)
 minio_svc = MinioService()
 cropper_s3 = ImageCropperS3(minio_service=minio_svc)
 cropper_local = ImageCropperLocal(output_base_dir="/app/output")
+
+# Chia sẻ singleton với WebSocket router
+ws_init_services(
+    yolo_model=yolo_model,
+    coord_processor=coord_processor,
+    text_analyzer=text_analyzer,
+    minio_svc=minio_svc,
+    llm_ocr_svc=llm_ocr_svc,
+    smart_ocr_svc=smart_ocr_svc,
+    cropper_s3=cropper_s3,
+    cropper_local=cropper_local,
+)
 
 @app.post("/api/v1/layout-analysis")
 async def layout_analysis(
@@ -55,7 +70,8 @@ async def layout_analysis(
     check_digital_text: bool = Form(True),
     doc_recognizer: bool = Form(True),
     table_recognizer: bool = Form(True),
-    smart_ocr: bool = Form(True)
+    smart_ocr: bool = Form(True),
+    extend_border: Optional[str] = Form(None)
 ):
     if doc_recognizer:
         check_digital_text = True
@@ -115,6 +131,10 @@ async def layout_analysis(
                     
                     if element.get("digital_text") == "false":
                         x_min, y_min, x_max, y_max = element["bbox"]
+                        if extend_border:
+                            x_min, y_min, x_max, y_max = get_extended_bbox(
+                                [x_min, y_min, x_max, y_max], img_bgr.shape[0], img_bgr.shape[1], extend_border
+                            )
                         crop_img = img_bgr[y_min:y_max, x_min:x_max]
                         crop_img = smart_ocr_svc.ensure_bgr(crop_img)
                         ocr_elements.append(element)
@@ -146,7 +166,8 @@ async def layout_analysis(
                     page_num=page_idx,
                     user_id=x_user_id,
                     conv_id=x_conversation_id,
-                    doc_id=x_document_id
+                    doc_id=x_document_id,
+                    extend_border=extend_border
                 )
             else:
                 # Hàm crop_and_save của class Local cũ
@@ -154,7 +175,8 @@ async def layout_analysis(
                     img_matrix=img_bgr,
                     elements=processed_elements,
                     request_id=request_id,
-                    page_num=page_idx
+                    page_num=page_idx,
+                    extend_border=extend_border
                 )
             
             # Cleanup output keys

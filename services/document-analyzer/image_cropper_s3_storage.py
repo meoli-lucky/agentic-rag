@@ -1,16 +1,24 @@
 import cv2
+from utils import get_extended_bbox
 
 class ImageCropperS3:
     def __init__(self, minio_service):
         self.minio_service = minio_service
 
-    def crop_and_upload(self, img_matrix, elements, page_num, user_id, conv_id, doc_id):
+    def crop_and_upload(self, img_matrix, elements, page_num, user_id, conv_id, doc_id, extend_border=None):
         """
         Cắt ảnh và upload thẳng lên MinIO, không chạm ổ cứng.
         """
         final_elements = []
+        img_h, img_w = img_matrix.shape[:2]
+        
         for index, element in enumerate(elements):
             x_min, y_min, x_max, y_max = element["bbox"]
+            
+            # Áp dụng mở rộng biên nếu có tùy chọn
+            if extend_border:
+                x_min, y_min, x_max, y_max = get_extended_bbox([x_min, y_min, x_max, y_max], img_h, img_w, extend_border)
+                
             lbl = element["label"]
             
             # LUÔN LUÔN CẮT ẢNH CHO MỌI BLOCK (Để phục vụ UI Preview)
