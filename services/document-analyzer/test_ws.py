@@ -1,5 +1,5 @@
 """
-Test WebSocket /ws/layout-analysis
+Test WebSocket /ws/document-analyzer
 
 Cách dùng:
     python test_ws.py <đường_dẫn_file_pdf_hoặc_ảnh>
@@ -24,7 +24,7 @@ except ImportError:
 
 HOST = "localhost"
 PORT = 8500
-WS_URL = f"ws://{HOST}:{PORT}/ws/layout-analysis"
+WS_URL = f"ws://{HOST}:{PORT}/ws/document-analyzer"
 
 
 async def test(file_path: str):

@@ -1,0 +1,22 @@
+services:
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-qwen3-5-2b-service
+    ports:
+      - "8000:8080"
+    volumes:
+      - ./models:/models
+    command: >
+      -m /models/Qwen3.5-2B-Q4_K_S.gguf
+      --mmproj /models/qwen3.5-2b-mmproj-f16.gguf
+      --host 0.0.0.0
+      --port 8080
+      -ngl 99
+      --chat-template-kwargs "{\"enable_thinking\": false}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

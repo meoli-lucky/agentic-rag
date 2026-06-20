@@ -49,7 +49,7 @@ ws_init_services(
     cropper_local=cropper_local,
 )
 
-@app.post("/api/v1/layout-analysis")
+@app.post("/api/v1/document-analyzer")
 async def layout_analysis(
     file: UploadFile = File(...),
     

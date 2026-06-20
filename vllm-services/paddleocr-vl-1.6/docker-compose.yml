@@ -4,7 +4,6 @@ services:
   paddleocr-vl-1.6:
     build: .
     container_name: paddleocr-vl-1.6-service
-    runtime: nvidia
     restart: unless-stopped
     ports:
       - "8300:8300"

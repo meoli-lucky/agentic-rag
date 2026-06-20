@@ -2,26 +2,27 @@ version: '3.8'
 
 services:
   # 1. Qwen 2.5 3B Instruct Service running on GPU 0
-  qwen2.5-3b:
-    image: vllm/vllm-openai:latest
-    container_name: qwen2.5-3b-service
-    restart: unless-stopped
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-qwen3-5-2b-service
     ports:
-      - "8000:8000"
-    ipc: host
-    environment:
-      - CUDA_VISIBLE_DEVICES=0
+      - "8000:8080"
     volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./llama-services/qwen3.5-2B-q4_0.gguf/models:/models
     command: >
-      Qwen/Qwen2.5-3B-Instruct --max-model-len 4096 --max-num-seqs 2 --gpu-memory-utilization 0.75 --dtype float16
+      -m /models/Qwen3.5-2B-Q4_K_S.gguf
+      --mmproj /models/qwen3.5-2b-mmproj-f16.gguf
+      --host 0.0.0.0
+      --port 8080
+      -ngl 99
+      --chat-template-kwargs "{\"enable_thinking\": false}"
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: [ '0' ]
-              capabilities: [ gpu ]
+              count: all
+              capabilities: [gpu]
     networks:
       - rag_net
 

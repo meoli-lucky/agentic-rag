@@ -108,7 +108,7 @@ Dịch vụ phân tích bố cục trang tài liệu sử dụng mô hình **Doc
   cd services/document-analyzer
   docker compose up -d
   ```
-  * **API Endpoint**: `http://localhost:8500/api/v1/layout-analysis` (POST)
+  * **API Endpoint**: `http://localhost:8500/api/v1/document-analyzer` (POST)
   * **MinIO API Port**: `9000` (được cấu hình S3 storage cho ảnh crop)
   * **MinIO Console**: `http://localhost:9001` (User: `document_storage` / Pass: `document_storage_password_123`)
 

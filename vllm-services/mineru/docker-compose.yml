@@ -4,7 +4,6 @@ services:
   mineru-api:
     build: .
     container_name: mineru-api-service
-    runtime: nvidia
     restart: unless-stopped
     shm_size: '2gb'
     ports:

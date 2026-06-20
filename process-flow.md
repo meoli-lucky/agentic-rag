@@ -31,7 +31,7 @@ Tài liệu mô tả luồng xử lý và các điều kiện logic của servic
 
 ## 2. API Endpoint
 
-**POST** `/api/v1/layout-analysis`
+**POST** `/api/v1/document-analyzer`
 
 ### 2.1 Headers (bắt buộc)
 
@@ -264,15 +264,15 @@ Với mỗi item trong final_page_elements:
 
 ---
 
-## 9. WebSocket API: `/ws/layout-analysis`
+## 9. WebSocket API: `/ws/document-analyzer`
 
 Endpoint WebSocket cung cấp **real-time progress** trong suốt quá trình xử lý.
-Tất cả logic xử lý giống hệt `/api/v1/layout-analysis`.
+Tất cả logic xử lý giống hệt `/api/v1/document-analyzer`.
 
 ### 9.1 Kết nối
 
 ```
-ws://<host>:<port>/ws/layout-analysis
+ws://<host>:<port>/ws/document-analyzer
 ```
 
 ### 9.2 Protocol
@@ -375,7 +375,7 @@ async def analyze_document(file_path: str):
         "doc_recognizer":     True,
     }
 
-    async with websockets.connect("ws://localhost:8000/ws/layout-analysis") as ws:
+    async with websockets.connect("ws://localhost:8000/ws/document-analyzer") as ws:
         await ws.send(json.dumps(params))
 
         async for message in ws:
@@ -410,7 +410,7 @@ reader.onload = async (e) => {
     new Uint8Array(e.target.result).reduce((d, b) => d + String.fromCharCode(b), '')
   );
 
-  const ws = new WebSocket('ws://localhost:8000/ws/layout-analysis');
+  const ws = new WebSocket('ws://localhost:8000/ws/document-analyzer');
 
   ws.onopen = () => {
     ws.send(JSON.stringify({
@@ -450,7 +450,7 @@ reader.readAsArrayBuffer(file);
 ## 4. Sơ đồ luồng tổng hợp (Flow Diagram)
 
 ```
-POST /api/v1/layout-analysis
+POST /api/v1/document-analyzer
          │
          ▼
 [0] Normalize params

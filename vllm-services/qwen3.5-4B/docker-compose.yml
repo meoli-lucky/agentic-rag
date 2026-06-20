@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  qwen2.5-3b:
+  qwen3.5-4b:
     image: vllm/vllm-openai:latest
-    container_name: qwen2.5-3b-service
+    container_name: qwen3.5-4b-service
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -14,17 +14,15 @@ services:
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
     command: >
-      Qwen/Qwen2.5-3B-Instruct --max-model-len 4096 --max-num-seqs 2 --gpu-memory-utilization 0.75 --dtype float16
+      --model Qwen/Qwen3.5-4B 
+      --max-model-len 20000 
+      --gpu-memory-utilization 0.90
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['0']
+              device_ids: ['0', '1']
               capabilities: [gpu]
     networks:
       - default
-
-networks:
-  default:
-    name: rag_net

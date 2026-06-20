@@ -1,5 +1,5 @@
 """
-WebSocket endpoint: /ws/layout-analysis
+WebSocket endpoint: /ws/document-analyzer
 
 Protocol:
   1. Client connects via WebSocket.
@@ -92,7 +92,7 @@ async def _progress(ws: WebSocket, step: int, step_name: str, message: str,
 
 
 # ─── WebSocket endpoint ─────────────────────────────────────────────────────
-@router.websocket("/ws/layout-analysis")
+@router.websocket("/ws/document-analyzer")
 async def ws_layout_analysis(websocket: WebSocket):
     await websocket.accept()
 
