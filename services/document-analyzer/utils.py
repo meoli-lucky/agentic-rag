@@ -1,16 +1,16 @@
-def get_extended_bbox(bbox, img_height, img_width, extend_border):
+def get_extended_bbox(bbox, img_height, img_width, crop_padding):
     """
-    Hàm tính toán tọa độ bbox mới sau khi mở rộng biên (extend border).
-    extend_border: định dạng "top,left,bottom,right" (ví dụ: "5,5,5,5" hoặc "0.05,0.02,0.05,0.02")
+    Hàm tính toán tọa độ bbox mới sau khi mở rộng biên (crop padding).
+    crop_padding: định dạng "top,left,bottom,right" (ví dụ: "5,5,5,5" hoặc "0.05,0.02,0.05,0.02")
     """
-    if not extend_border:
+    if not crop_padding:
         return bbox
     try:
-        if isinstance(extend_border, str):
+        if isinstance(crop_padding, str):
             # Tách chuỗi và loại bỏ khoảng trắng
-            parts = [float(x.strip()) for x in extend_border.split(",")]
+            parts = [float(x.strip()) for x in crop_padding.split(",")]
         else:
-            parts = list(extend_border)
+            parts = list(crop_padding)
         
         if len(parts) != 4:
             return bbox
@@ -34,5 +34,5 @@ def get_extended_bbox(bbox, img_height, img_width, extend_border):
         
         return [new_x_min, new_y_min, new_x_max, new_y_max]
     except Exception as e:
-        print(f"[Extend Border] Error parsing extend_border '{extend_border}': {e}")
+        print(f"[Crop Padding] Error parsing crop_padding '{crop_padding}': {e}")
         return bbox

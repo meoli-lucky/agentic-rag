@@ -1,0 +1,86 @@
+id: qdrant_semantic_search
+namespace: fds.ai.agentic-rag
+description: Flow truy vấn ngữ nghĩa (Semantic Search) trên Qdrant sử dụng Vector Embedding (Warm Start thông qua API)
+
+inputs:
+  - id: query
+    type: STRING
+    description: "Câu truy vấn ngữ nghĩa (ví dụ: 'Quy định bồi thường đất đai')"
+  - id: x_user_id
+    type: STRING
+    description: "ID người dùng (dùng để xác định collection)"
+  - id: x_conversation_id
+    type: STRING
+    description: "ID cuộc hội thoại (dùng để xác định collection)"
+  - id: x_document_id
+    type: STRING
+    description: "ID tài liệu (dùng để xác định collection)"
+  - id: top_k
+    type: INT
+    defaults: 5
+    description: "Số lượng kết quả phù hợp nhất cần trả về"
+  - id: threshold
+    type: STRING
+    defaults: "0.0"
+    description: "Độ tin cậy tối thiểu (score threshold, từ 0.0 đến 1.0)"
+
+variables:
+  # Cấu hình API Endpoint của document-analyzer
+  # Vì Kestra chạy cùng mạng docker với document-analyzer (rag_net), ta dùng host "document-analyzer"
+  semantic_search_url: "http://document-analyzer:8500/api/v1/semantic-search"
+  
+  # Tên collection phục vụ thông báo
+  qdrant_collection: "{{ inputs.x_user_id }}_{{ inputs.x_conversation_id }}_{{ inputs.x_document_id }}"
+
+  # Backend Webhook để nhận kết quả tìm kiếm từ pipeline
+  backend_webhook_url: "http://host.docker.internal:8080/api/kestra/webhook"
+
+tasks:
+  # ---------------------------------------------------------
+  # BƯỚC 1: Gọi API Semantic Search của document-analyzer
+  # ---------------------------------------------------------
+  - id: semantic_search_query
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ vars.semantic_search_url }}"
+    method: POST
+    contentType: multipart/form-data
+    headers:
+      x-user-id: "{{ inputs.x_user_id }}"
+      x-conversation-id: "{{ inputs.x_conversation_id }}"
+      x-document-id: "{{ inputs.x_document_id }}"
+    formData:
+      query: "{{ inputs.query }}"
+      top_k: "{{ inputs.top_k }}"
+      threshold: "{{ inputs.threshold }}"
+
+  # ---------------------------------------------------------
+  # BƯỚC 2: Gửi kết quả về Backend (Webhook)
+  # ---------------------------------------------------------
+  - id: notify_backend_results
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: |
+      {
+        "query": "{{ inputs.query }}",
+        "collection": "{{ vars.qdrant_collection }}",
+        "status": "SEARCH_SUCCESS",
+        "results": {{ outputs.semantic_search_query.body.results | json }}
+      }
+
+errors:
+  - id: notify_search_error
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: |
+      {
+        "query": "{{ inputs.query }}",
+        "collection": "{{ vars.qdrant_collection }}",
+        "status": "SEARCH_FAILED",
+        "error_stage": "{{ execution.failedTaskId }}"
+      }

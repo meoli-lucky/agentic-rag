@@ -20,7 +20,8 @@ Protocol:
          "check_digital_text": true,                   [default: true]
          "doc_recognizer":     true,                   [default: true]
          "table_recognizer":   true,                   [default: true]
-         "smart_ocr":          true                    [default: true]
+         "smart_ocr":          true,                   [default: true]
+         "crop_padding":       null                    [default: null]
        }
   3. Server streams JSON progress events:
        { "event": "progress", "step": <int>, "step_name": "<str>",
@@ -123,7 +124,7 @@ async def ws_layout_analysis(websocket: WebSocket):
         doc_recognizer        = bool(params.get("doc_recognizer", True))
         table_recognizer      = bool(params.get("table_recognizer", True))
         smart_ocr             = bool(params.get("smart_ocr", True))
-        extend_border         = params.get("extend_border", None)
+        crop_padding          = params.get("crop_padding", params.get("extend_border", None))
 
         # ── Bước 0: Normalize params ───────────────────────────────────────
         if doc_recognizer:
@@ -247,9 +248,9 @@ async def ws_layout_analysis(websocket: WebSocket):
                             continue
                         if element.get("digital_text") == "false":
                             x_min, y_min, x_max, y_max = element["bbox"]
-                            if extend_border:
+                            if crop_padding:
                                 x_min, y_min, x_max, y_max = get_extended_bbox(
-                                    [x_min, y_min, x_max, y_max], img_bgr.shape[0], img_bgr.shape[1], extend_border
+                                    [x_min, y_min, x_max, y_max], img_bgr.shape[0], img_bgr.shape[1], crop_padding
                                 )
                             crop_img = img_bgr[y_min:y_max, x_min:x_max]
                             crop_img = _smart_ocr_svc.ensure_bgr(crop_img)
@@ -331,7 +332,7 @@ async def ws_layout_analysis(websocket: WebSocket):
                         user_id=x_user_id,
                         conv_id=x_conversation_id,
                         doc_id=x_document_id,
-                        extend_border=extend_border,
+                        crop_padding=crop_padding,
                     )
                 else:
                     final_page_elements = await asyncio.to_thread(
@@ -340,7 +341,7 @@ async def ws_layout_analysis(websocket: WebSocket):
                         elements=processed_elements,
                         request_id=request_id,
                         page_num=page_idx,
-                        extend_border=extend_border,
+                        crop_padding=crop_padding,
                     )
                 store_time = time.time() - t0
 

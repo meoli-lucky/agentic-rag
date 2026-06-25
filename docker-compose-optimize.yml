@@ -1,7 +1,43 @@
-version: '3.8'
+# ==========================================
+# CẤU HÌNH GỐC CHO KESTRA (YAML Anchor)
+# ==========================================
+x-kestra-base: &kestra-base
+  image: kestra/kestra:v0.19.8
+  restart: unless-stopped
+  environment:
+    KESTRA_PLUGINS: "io.kestra.plugin:plugin-aws:LATEST,io.kestra.plugin:plugin-script-python:LATEST"
+    KESTRA_CONFIGURATION: |
+      kestra:
+        repository:
+          type: postgres
+        queue:
+          type: postgres
+        storage:
+          type: local
+          local:
+            base-path: /app/storage
+      datasources:
+        postgres:
+          url: jdbc:postgresql://postgres:5432/kestra
+          driverClassName: org.postgresql.Driver
+          username: kestra
+          password: kestra_password_123
+  volumes:
+    - kestra_storage_data:/app/storage
+    - kestra_plugins_data:/app/plugins
+    - /var/run/docker.sock:/var/run/docker.sock 
+  depends_on:
+    postgres:
+      condition: service_started
+    kestra-init-volume:
+      condition: service_completed_successfully
+  networks:
+    - rag_net
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 
 services:
-  # 1. Qwen 2.5 3B Instruct Service running on GPU 0
+  # 1. Qwen 2.5 3B Instruct Service
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: llama-qwen3-5-2b-service
@@ -98,9 +134,89 @@ services:
       - minio_data:/data
     networks:
       - rag_net
+
+  # 5. Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-vector-db
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - rag_net
+
+  # 6. Shared PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres-storage-service
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: kestra
+      POSTGRES_USER: kestra
+      POSTGRES_PASSWORD: kestra_password_123
+    volumes:
+      - postgres_db_data:/var/lib/postgresql/data
+    networks:
+      - rag_net
+
+  # 6.5. Kestra Volume Permission Init (Chạy 1 lần trước khi khởi động Kestra)
+  kestra-init-volume:
+    image: alpine
+    container_name: kestra-init-volume
+    user: "0:0"
+    volumes:
+      - kestra_storage_data:/app/storage
+      - kestra_plugins_data:/app/plugins
+    command: chown -R 1000:1000 /app/storage /app/plugins
+    networks:
+      - rag_net
+
+  # ---------------------------------------------------------
+  # 7. Kestra Webserver (Giao diện UI & API)
+  # ---------------------------------------------------------
+  kestra-webserver:
+    <<: *kestra-base
+    container_name: kestra-webserver
+    command: server webserver
+    ports:
+      - "8600:8080"
+
+  # ---------------------------------------------------------
+  # 8. Kestra Executor (Nhạc trưởng điều phối luồng logic)
+  # ---------------------------------------------------------
+  kestra-executor:
+    <<: *kestra-base
+    container_name: kestra-executor
+    command: server executor
+
+  # ---------------------------------------------------------
+  # 9. Kestra Scheduler (Quét và kích hoạt trigger/cronjob)
+  # ---------------------------------------------------------
+  kestra-scheduler:
+    <<: *kestra-base
+    container_name: kestra-scheduler
+    command: server scheduler
+
+  # ---------------------------------------------------------
+  # 10. Kestra Worker (Công nhân trực tiếp chạy task)
+  # ---------------------------------------------------------
+  kestra-worker:
+    <<: *kestra-base
+    container_name: kestra-worker
+    command: server worker
+
 networks:
   rag_net:
     driver: bridge
 
 volumes:
   minio_data:
+  qdrant_data:
+  postgres_db_data:
+  kestra_storage_data:
+  kestra_plugins_data:

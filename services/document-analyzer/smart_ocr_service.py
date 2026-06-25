@@ -158,7 +158,8 @@ class SmartOcrService:
         import time
 
         max_workers = self.max_threads
-        print(f"[OCR] Starting OCR for page {page_num} with max_threads={max_workers} (smart_ocr={smart_ocr})")
+        max_crop_width = int(os.getenv("OCR_MAX_CROP_WIDTH", "1600"))
+        print(f"[OCR] Starting OCR for page {page_num} with max_threads={max_workers} (smart_ocr={smart_ocr}, max_crop_width={max_crop_width})")
 
         if smart_ocr:
             # Giới hạn số lượng ảnh ghép mỗi chunk để tránh VLM nén ảnh làm mờ nét chữ
@@ -168,6 +169,18 @@ class SmartOcrService:
             for chunk_idx in range(0, len(ocr_crops), chunk_size):
                 crops_chunk = ocr_crops[chunk_idx:chunk_idx + chunk_size]
                 elements_chunk = ocr_elements[chunk_idx:chunk_idx + chunk_size]
+                
+                # Resize các crop có kích thước quá lớn trước khi xếp chồng lên nhau
+                resized_crops = []
+                for img in crops_chunk:
+                    h, w = img.shape[:2]
+                    if w > max_crop_width:
+                        new_w = max_crop_width
+                        new_h = max(1, int(h * (max_crop_width / w)))
+                        print(f"[Smart OCR] Resizing oversized crop from {w}x{h} to {new_w}x{new_h}", flush=True)
+                        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    resized_crops.append(img)
+                crops_chunk = resized_crops
                 
                 max_width = max(img.shape[1] for img in crops_chunk)
                 # Đảm bảo max_width tối thiểu là 600px để nhãn bbox trên divider hiển thị rõ ràng
@@ -247,6 +260,14 @@ class SmartOcrService:
             print(f"[Regular OCR] Starting OCR for {len(ocr_crops)} crops concurrently with {max_workers} threads...")
             tasks = []
             for idx, (el, crop_img) in enumerate(zip(ocr_elements, ocr_crops)):
+                # Resize các crop có kích thước quá lớn
+                h, w = crop_img.shape[:2]
+                if w > max_crop_width:
+                    new_w = max_crop_width
+                    new_h = max(1, int(h * (max_crop_width / w)))
+                    print(f"[Regular OCR] Resizing crop {idx+1} from {w}x{h} to {new_w}x{new_h}", flush=True)
+                    crop_img = cv2.resize(crop_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
                 tasks.append({
                     "idx": idx,
                     "el": el,

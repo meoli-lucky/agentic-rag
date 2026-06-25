@@ -7,7 +7,7 @@ class ImageCropperLocal:
         self.output_base_dir = output_base_dir
         os.makedirs(self.output_base_dir, exist_ok=True)
 
-    def crop_and_save(self, img_matrix, elements, request_id, page_num, extend_border=None):
+    def crop_and_save(self, img_matrix, elements, request_id, page_num, crop_padding=None):
         """
         Cắt ảnh dựa trên mảng tọa độ và trả về mảng đã được đính kèm đường dẫn file
         """
@@ -21,8 +21,8 @@ class ImageCropperLocal:
             x_min, y_min, x_max, y_max = element["bbox"]
             
             # Áp dụng mở rộng biên nếu có tùy chọn
-            if extend_border:
-                x_min, y_min, x_max, y_max = get_extended_bbox([x_min, y_min, x_max, y_max], img_h, img_w, extend_border)
+            if crop_padding:
+                x_min, y_min, x_max, y_max = get_extended_bbox([x_min, y_min, x_max, y_max], img_h, img_w, crop_padding)
                 
             lbl = element["label"]
             

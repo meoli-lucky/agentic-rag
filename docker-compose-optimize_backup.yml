@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  # 1. Qwen 2.5 3B Instruct Service running on GPU 0
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-qwen3-5-2b-service
+    ports:
+      - "8000:8080"
+    volumes:
+      - ./llama-services/qwen3.5-2B-q4_0.gguf/models:/models
+    command: >
+      -m /models/Qwen3.5-2B-Q4_K_S.gguf
+      --mmproj /models/qwen3.5-2b-mmproj-f16.gguf
+      --host 0.0.0.0
+      --port 8080
+      -ngl 99
+      --chat-template-kwargs "{\"enable_thinking\": false}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - rag_net
+
+  # 2. Paddle OCR VL Service
+  paddleocr-llama:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: paddleocr-llama-service
+    restart: unless-stopped
+    ports:
+      - "8300:8080"
+    volumes:
+      - ./llama-services/paddle-ocr-vl/models:/models
+    command: >
+      -m /models/PaddleOCR-VL-1.6.Q4_K_M.gguf --mmproj /models/PaddleOCR-VL-1.6-GGUF-mmproj.gguf --host 0.0.0.0 --port 8080 -c 6144 -ngl 99 -fa on -np 2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    networks:
+      - rag_net
+
+  # 3. Layout Detector Service
+  document-analyzer:
+    build: ./services/document-analyzer
+    container_name: document-analyzer-service
+    restart: unless-stopped
+    ports:
+      - "8500:8500"
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=document_storage
+      - MINIO_SECRET_KEY=document_storage_password_123
+      - MINIO_SECURE=False
+      - LLM_OCR_ENDPOINT=http://host.docker.internal:8300/v1/chat/completions
+      - LLM_OCR_MODEL=paddleocr
+      - LLM_OCR_TEMPERATURE=0.1
+      - LLM_OCR_MAX_TOKENS=4096
+      - OCR_MAX_THREADS=2
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./services/document-analyzer/input:/app/input
+      - ./services/document-analyzer/output:/app/output
+    shm_size: '8gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    depends_on:
+      - minio
+    networks:
+      - rag_net
+
+  # 4. MinIO S3 Storage Service
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio-storage-service
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: document_storage
+      MINIO_ROOT_PASSWORD: document_storage_password_123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - rag_net
+networks:
+  rag_net:
+    driver: bridge
+
+volumes:
+  minio_data:

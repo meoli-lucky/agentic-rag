@@ -1,0 +1,345 @@
+id: complaint_document_summary_pipeline
+namespace: fds.ai.agentic-rag
+description: Pipeline xử lý tài liệu - OCR - Tóm tắt - Embeded - Lưu trữ
+
+inputs:
+  - id: original_file
+    type: FILE
+    description: File upload từ Client
+  - id: x_filename
+    type: STRING
+    description: "Tên file gốc (ví dụ: 1.pdf, 2.pdf)"
+  - id: x_user_id
+    type: STRING
+  - id: x_conversation_id
+    type: STRING
+  - id: x_document_id
+    type: STRING
+
+variables:
+  # Cấu hình MinIO
+  minio_endpoint: "http://minio:9000"
+  minio_bucket: "documents-ocr"
+  minio_ak: "document_storage"
+  minio_sk: "document_storage_password_123"
+
+  # Cấu hình API endpoints
+  document_analyzer_url: "http://host.docker.internal:8500/api/v1/document-analyzer"
+  llm_text_url: "http://host.docker.internal:8000/v1/chat/completions"
+
+  # Backend Webhook (Thay bằng URL backend thực tế của bạn để nhận trạng thái)
+  backend_webhook_url: "http://host.docker.internal:8080/api/kestra/webhook"
+
+  # Tên Collection Qdrant động
+  qdrant_collection: "{{inputs.x_user_id}}_{{inputs.x_conversation_id}}_{{inputs.x_document_id}}"
+
+tasks:
+  # ---------------------------------------------------------
+  # BƯỚC 1: Lưu file gốc vào MinIO
+  # ---------------------------------------------------------
+  - id: save_original_to_minio
+    type: io.kestra.plugin.minio.Upload
+    endpoint: "{{ vars.minio_endpoint }}"
+    accessKeyId: "{{ vars.minio_ak }}"
+    secretKeyId: "{{ vars.minio_sk }}"
+    bucket: "{{ vars.minio_bucket }}"
+    key: "{{ inputs.x_user_id }}/{{ inputs.x_conversation_id }}/{{ inputs.x_document_id }}/{{ inputs.x_filename }}"
+    from: "{{ inputs.original_file }}"
+
+  - id: notify_step_1
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": 15, "status": "File saved to MinIO"}'
+
+  # ---------------------------------------------------------
+  # BƯỚC 2: Tạo Presigned URL cho file vừa upload (giữ private bucket)
+  # ---------------------------------------------------------
+  - id: generate_presigned_url
+    type: io.kestra.plugin.scripts.python.Script
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    beforeCommands:
+      - pip install minio kestra
+    script: |
+      from minio import Minio
+      from kestra import Kestra
+
+      client = Minio(
+          "minio:9000",
+          access_key="{{ vars.minio_ak }}",
+          secret_key="{{ vars.minio_sk }}",
+          secure=False
+      )
+
+      # Sinh presigned URL có hạn sử dụng 10 phút
+      url = client.presigned_get_object(
+          "{{ vars.minio_bucket }}",
+          "{{ inputs.x_user_id }}/{{ inputs.x_conversation_id }}/{{ inputs.x_document_id }}/{{ inputs.x_filename }}"
+      )
+
+      Kestra.outputs({"url": url})
+
+  # ---------------------------------------------------------
+  # BƯỚC 3: Gọi OCR Application
+  # ---------------------------------------------------------
+  - id: call_ocr_service
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ vars.document_analyzer_url }}"
+    method: POST
+    contentType: multipart/form-data
+    timeout: PT10M
+    options:
+      readTimeout: PT10M
+    headers:
+      x-user-id: "{{ inputs.x_user_id }}"
+      x-conversation-id: "{{ inputs.x_conversation_id }}"
+      x-document-id: "{{ inputs.x_document_id }}"
+    formData:
+      file_url: "{{ outputs.generate_presigned_url.vars.url }}"
+      sort: "coordinates"
+      remove_page_header: "true"
+      confidence_threshold: "0.25"
+      merge_suspicion: "true"
+      check_digital_text: "true"
+      storage_type: "s3"
+      doc_recognizer: "true"
+      table_recognizer: "true"
+      smart_ocr: "true"
+      crop_padding: "3,3,3,3"
+    # Kestra tự động bắt kết quả JSON trả về
+
+  # ---------------------------------------------------------
+  # BƯỚC 5: Trích xuất Text & Minify (Sử dụng Python Script trong Kestra)
+  # ---------------------------------------------------------
+  - id: extract_and_minify_text
+    type: io.kestra.plugin.scripts.python.Script
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    beforeCommands:
+      - pip install kestra
+    outputFiles:
+      - "minified.txt"
+    script: |
+      import json
+      from kestra import Kestra
+
+      # Lấy data từ bước trước do Kestra truyền vào
+      raw_data = {{ outputs.call_ocr_service.body | json }}
+      if isinstance(raw_data, str):
+          ocr_data = json.loads(raw_data)
+      else:
+          ocr_data = raw_data
+
+      # Trích xuất logic (Ghép nội dung của các element trong data)
+      raw_text = "\n".join([el["content"] for el in ocr_data.get("data", []) if el.get("content")])
+
+      # Minify cơ bản (Xóa khoảng trắng thừa, nén dòng)
+      minified_text = " ".join(raw_text.split())
+
+      # Ghi ra file để lưu trữ
+      with open("minified.txt", "w", encoding="utf-8") as f:
+          f.write(minified_text)
+
+      # Đẩy ra outputs của Kestra
+      Kestra.outputs({"minified_text": minified_text})
+
+  # ---------------------------------------------------------
+  # BƯỚC 5b: Lưu văn bản đã nén vào MinIO
+  # ---------------------------------------------------------
+  - id: save_minified_to_minio
+    type: io.kestra.plugin.minio.Upload
+    endpoint: "{{ vars.minio_endpoint }}"
+    accessKeyId: "{{ vars.minio_ak }}"
+    secretKeyId: "{{ vars.minio_sk }}"
+    bucket: "{{ vars.minio_bucket }}"
+    key: "{{ inputs.x_user_id }}/{{ inputs.x_conversation_id }}/{{ inputs.x_document_id }}/{{ inputs.x_filename | replace({'.pdf': '', '.PDF': ''}) }}_minified.txt"
+    from: "{{ outputs.extract_and_minify_text.outputFiles['minified.txt'] }}"
+
+  # ---------------------------------------------------------
+  # BƯỚC 6: Gọi LLM để tóm tắt nội dung & Stream về Backend
+  # ---------------------------------------------------------
+  - id: llm_summary
+    type: io.kestra.plugin.scripts.python.Script
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    timeout: PT10M
+    beforeCommands:
+      - pip install requests kestra
+    outputFiles:
+      - "summary.md"
+    script: |
+      import json
+      import sys
+      import time
+      import requests
+      from kestra import Kestra
+
+      # Lấy văn bản đã minify từ bước 5
+      minified_text = {{ outputs.extract_and_minify_text.vars.minified_text | json }}
+
+      system_prompt = """Bạn là một trợ lý AI chuyên nghiệp trong lĩnh vực pháp lý và hành chính công. Nhiệm vụ của bạn là đọc và tóm tắt các đơn thư, khiếu nại, tố cáo, kiến nghị, phản ánh một cách khách quan, chính xác và khoa học.
+
+      Hãy tuân thủ nghiêm ngặt các nguyên tắc sau khi xử lý văn bản:
+      1. TRUNG LẬP: Không tự ý thêm bớt tình tiết, không đưa ra nhận xét cá nhân hoặc phán quyết chủ quan. Giữ nguyên thuật ngữ của người viết đơn.
+      2. CHÍNH XÁC: Bảo đảm giữ đúng các mốc thời gian, họ tên, địa danh, số tiền, và các số liệu kỹ thuật có trong đơn.
+      3. RÕ RÀNG: Chuyển đổi ngôn ngữ lộn xộn, bức xúc (nếu có) thành ngôn từ hành chính, mạch lạc, dễ hiểu nhưng không làm thay đổi bản chất sự việc.
+
+      Khi nhận được nội dung đơn thư, hãy xuất kết quả tóm tắt theo cấu trúc chuẩn hóa dưới đây:
+
+      ### 1. THÔNG TIN CHUNG
+      - Người làm đơn: [Họ và tên, năm sinh, CCCD, địa chỉ, số điện thoại - nếu có]
+      - Đối tượng bị khiếu nại/tố cáo: [Tên cá nhân, tổ chức hoặc cơ quan bị phản ánh]
+      - Loại hình đơn: [Khiếu nại / Tố cáo / Kiến nghị / Phản ánh]
+
+      ### 2. TÓM TẮT DIỄN BIẾN SỰ VIỆC
+      - Hoàn cảnh/Bối cảnh: [Sự việc bắt đầu từ đâu, khi nào?]
+      - Tình tiết chính: [Liệt kê các mốc thời gian và hành vi, sự việc cốt lõi theo trình tự thời gian]
+      - Chứng cứ kèm theo: [Các tài liệu, hình ảnh, video, hóa đơn... được người đơn đề cập - nếu có]
+
+      ### 3. NỘI DUNG CỐT LÕI & YÊU CẦU CỦA NGƯỜI ĐƠN
+      - Quyền lợi bị xâm phạm (theo người đơn): [Lý do người đơn cho rằng mình bị thiệt hại]
+      - Đề xuất, kiến nghị cụ thể: [Người đơn mong muốn cơ quan chức năng giải quyết việc gì? Ví dụ: bồi thường, kỷ luật, hủy quyết định hành chính...]
+
+      ### 4. ĐÁNH GIÁ SƠ BỘ VỀ THẨM QUYỀN (Nếu có thông tin)
+      - Xác định cơ quan có thẩm quyền giải quyết bước đầu dựa trên nội dung đơn: [Ví dụ: Ủy ban nhân dân xã/huyện, Tòa án nhân dân, Công an...]"""
+
+      # Gọi API LLM với stream=True
+      url = "{{ vars.llm_text_url }}"
+      headers = {"Content-Type": "application/json"}
+      payload = {
+          "model": "Qwen/Qwen3.5-2B",
+          "messages": [
+              {"role": "system", "content": system_prompt},
+              {"role": "user", "content": minified_text}
+          ],
+          "max_tokens": 20000,
+          "temperature": 0.3,
+          "stream": True
+      }
+
+      print("Starting LLM stream...", flush=True)
+      response = requests.post(url, json=payload, headers=headers, stream=True)
+      response.raise_for_status()
+
+      full_text = ""
+      buffer_text = ""
+      last_send_time = time.time()
+
+      for line in response.iter_lines():
+          if not line:
+              continue
+          line_str = line.decode('utf-8').strip()
+          if line_str.startswith("data: "):
+              data_str = line_str[6:]
+              if data_str == "[DONE]":
+                  break
+              try:
+                  data = json.loads(data_str)
+                  content = data["choices"][0]["delta"].get("content", "")
+                  if content:
+                      full_text += content
+                      buffer_text += content
+                      # In ra stdout để hiển thị realtime trong log của Kestra
+                      sys.stdout.write(content)
+                      sys.stdout.flush()
+
+                      # Định kỳ gửi chunk sang Backend (mỗi 1 giây hoặc khi có buffer đủ lớn)
+                      now = time.time()
+                      if now - last_send_time >= 1.0 and buffer_text:
+                          try:
+                              requests.post(
+                                  "{{ vars.backend_webhook_url }}",
+                                  json={
+                                      "document_id": "{{ inputs.x_document_id }}",
+                                      "progress": 60,
+                                      "status": "SUMMARY_STREAMING",
+                                      "chunk": buffer_text
+                                  },
+                                  timeout=2
+                              )
+                          except Exception:
+                              pass
+                          buffer_text = ""
+                          last_send_time = now
+              except Exception:
+                  pass
+
+      # Gửi nốt phần buffer còn lại
+      if buffer_text:
+          try:
+              requests.post(
+                  "{{ vars.backend_webhook_url }}",
+                  json={
+                      "document_id": "{{ inputs.x_document_id }}",
+                      "progress": 60,
+                      "status": "SUMMARY_STREAMING",
+                      "chunk": buffer_text
+                  },
+                  timeout=2
+              )
+          except Exception:
+              pass
+
+      print("\nStream finished.", flush=True)
+      with open("summary.md", "w", encoding="utf-8") as f:
+          f.write(full_text)
+      Kestra.outputs({"summary": full_text})
+
+  # ---------------------------------------------------------
+  # BƯỚC 7: Lưu kết quả tóm tắt vào MinIO
+  # ---------------------------------------------------------
+  - id: save_summary_to_minio
+    type: io.kestra.plugin.minio.Upload
+    endpoint: "{{ vars.minio_endpoint }}"
+    accessKeyId: "{{ vars.minio_ak }}"
+    secretKeyId: "{{ vars.minio_sk }}"
+    bucket: "{{ vars.minio_bucket }}"
+    key: "{{ inputs.x_user_id }}/{{ inputs.x_conversation_id }}/{{ inputs.x_document_id }}/{{ inputs.x_filename | replace({'.pdf': '', '.PDF': ''}) }}_summary.md"
+    from: "{{ outputs.llm_summary.outputFiles['summary.md'] }}"
+
+  - id: notify_step_7
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": 80, "status": "LLM Summary Saved to MinIO"}'
+
+  # ---------------------------------------------------------
+  # BƯỚC 8: Chunking & Đẩy tóm tắt vào VectorDB (Qdrant)
+  # ---------------------------------------------------------
+  - id: push_summary_to_qdrant
+    type: io.kestra.plugin.core.http.Request
+    uri: "http://document-analyzer:8500/api/v1/index-document"
+    method: POST
+    contentType: multipart/form-data
+    timeout: PT10M
+    options:
+      readTimeout: PT10M
+    headers:
+      x-user-id: "{{ inputs.x_user_id }}"
+      x-conversation-id: "{{ inputs.x_conversation_id }}"
+      x-document-id: "{{ inputs.x_document_id }}"
+    formData:
+      text: "{{ outputs.llm_summary.vars.summary }}"
+
+  - id: notify_final
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": 100, "status": "Completed"}'
+
+# Xử lý khi luồng bị LỖI (Bắn thông báo về cho Client)
+errors:
+  - id: notify_error
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": -1, "status": "FAILED", "error_stage": "{{ execution.failedTaskId }}"}'

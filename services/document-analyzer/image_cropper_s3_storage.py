@@ -5,7 +5,7 @@ class ImageCropperS3:
     def __init__(self, minio_service):
         self.minio_service = minio_service
 
-    def crop_and_upload(self, img_matrix, elements, page_num, user_id, conv_id, doc_id, extend_border=None):
+    def crop_and_upload(self, img_matrix, elements, page_num, user_id, conv_id, doc_id, crop_padding=None):
         """
         Cắt ảnh và upload thẳng lên MinIO, không chạm ổ cứng.
         """
@@ -16,8 +16,8 @@ class ImageCropperS3:
             x_min, y_min, x_max, y_max = element["bbox"]
             
             # Áp dụng mở rộng biên nếu có tùy chọn
-            if extend_border:
-                x_min, y_min, x_max, y_max = get_extended_bbox([x_min, y_min, x_max, y_max], img_h, img_w, extend_border)
+            if crop_padding:
+                x_min, y_min, x_max, y_max = get_extended_bbox([x_min, y_min, x_max, y_max], img_h, img_w, crop_padding)
                 
             lbl = element["label"]
             

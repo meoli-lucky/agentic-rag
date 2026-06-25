@@ -52,9 +52,23 @@ class MinioService:
                 object_name=object_name,
                 data=io.BytesIO(json_bytes),
                 length=len(json_bytes),
-                content_type="application/json"
+                 content_type="application/json"
             )
             return f"{self.bucket_name}/{object_name}"
         except S3Error as err:
             print(f"MinIO Upload JSON Error: {err}")
+            return None
+
+    def upload_file_bytes(self, object_name, file_bytes, content_type="application/octet-stream"):
+        try:
+            self.client.put_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name,
+                data=io.BytesIO(file_bytes),
+                length=len(file_bytes),
+                content_type=content_type
+            )
+            return f"{self.bucket_name}/{object_name}"
+        except S3Error as err:
+            print(f"MinIO Upload File Error: {err}")
             return None

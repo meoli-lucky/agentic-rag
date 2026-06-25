@@ -1,0 +1,239 @@
+id: document_rag_pipeline
+namespace: enterprise.ai_processing
+description: Pipeline xử lý tài liệu RAG - Upload MinIO, OCR, LLM Markdown (Qwen), Chunking & Qdrant
+
+inputs:
+  - id: original_file
+    type: FILE
+    description: File upload từ Client
+  - id: x_filename
+    type: STRING
+    description: "Tên file gốc (ví dụ: 1.pdf, 2.pdf)"
+  - id: x_user_id
+    type: STRING
+  - id: x_conversation_id
+    type: STRING
+  - id: x_document_id
+    type: STRING
+
+variables:
+  # Cấu hình MinIO
+  minio_endpoint: "http://minio:9000"
+  minio_bucket: "documents-ocr"
+  minio_ak: "document_storage"
+  minio_sk: "document_storage_password_123"
+
+  # Cấu hình API endpoints
+  document_analyzer_url: "http://host.docker.internal:8500/api/v1/document-analyzer"
+  llm_text_url: "http://host.docker.internal:8000/v1/chat/completions"
+
+  # Backend Webhook (Thay bằng URL backend thực tế của bạn để nhận trạng thái)
+  backend_webhook_url: "http://host.docker.internal:8080/api/kestra/webhook"
+
+  # Tên Collection Qdrant động
+  qdrant_collection: "{{inputs.x_user_id}}_{{inputs.x_conversation_id}}_{{inputs.x_document_id}}"
+
+tasks:
+  # ---------------------------------------------------------
+  # BƯỚC 1: Lưu file gốc vào MinIO
+  # ---------------------------------------------------------
+  - id: save_original_to_minio
+    type: io.kestra.plugin.minio.Upload
+    endpoint: "{{ vars.minio_endpoint }}"
+    accessKeyId: "{{ vars.minio_ak }}"
+    secretKeyId: "{{ vars.minio_sk }}"
+    bucket: "{{ vars.minio_bucket }}"
+    key: "{{ inputs.x_user_id }}/{{ inputs.x_conversation_id }}/{{ inputs.x_document_id }}/{{ inputs.x_filename }}"
+    from: "{{ inputs.original_file }}"
+
+  - id: notify_step_1
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": 15, "status": "File saved to MinIO"}'
+
+  # ---------------------------------------------------------
+  # BƯỚC 2: Tạo Presigned URL cho file vừa upload (giữ private bucket)
+  # ---------------------------------------------------------
+  - id: generate_presigned_url
+    type: io.kestra.plugin.scripts.python.Script
+    runner: PROCESS
+    beforeCommands:
+      - pip install minio kestra
+    script: |
+      from minio import Minio
+      from kestra import Kestra
+
+      client = Minio(
+          "minio:9000",
+          access_key="{{ vars.minio_ak }}",
+          secret_key="{{ vars.minio_sk }}",
+          secure=False
+      )
+
+      # Sinh presigned URL có hạn sử dụng 10 phút
+      url = client.presigned_get_object(
+          "{{ vars.minio_bucket }}",
+          "{{ inputs.x_user_id }}/{{ inputs.x_conversation_id }}/{{ inputs.x_document_id }}/{{ inputs.x_filename }}"
+      )
+      
+      Kestra.outputs({"url": url})
+
+  # ---------------------------------------------------------
+  # BƯỚC 3: Gọi OCR Application
+  # ---------------------------------------------------------
+  - id: call_ocr_service
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ vars.document_analyzer_url }}"
+    method: POST
+    contentType: multipart/form-data
+    headers:
+      x-user-id: "{{ inputs.x_user_id }}"
+      x-conversation-id: "{{ inputs.x_conversation_id }}"
+      x-document-id: "{{ inputs.x_document_id }}"
+    formData:
+      file_url: "{{ outputs.generate_presigned_url.url }}"
+      sort: "coordinates"
+      remove_page_header: "true"
+      confidence_threshold: "0.25"
+      merge_suspicion: "true"
+      check_digital_text: "true"
+      storage_type: "s3"
+      doc_recognizer: "true"
+      table_recognizer: "true"
+      smart_ocr: "true"
+      crop_padding: "3,3,3,3"
+    # Kestra tự động bắt kết quả JSON trả về
+
+  # ---------------------------------------------------------
+  # BƯỚC 4: Cất JSON OCR vào MinIO
+  # ---------------------------------------------------------
+  - id: write_json_file
+    type: io.kestra.plugin.core.storage.Write
+    content: "{{ outputs.call_ocr_service.body }}"
+    extension: ".json"
+
+  - id: save_json_to_minio
+    type: io.kestra.plugin.minio.Upload
+    endpoint: "{{ vars.minio_endpoint }}"
+    accessKeyId: "{{ vars.minio_ak }}"
+    secretKeyId: "{{ vars.minio_sk }}"
+    bucket: "{{ vars.minio_bucket }}"
+    key: "{{ inputs.x_user_id }}/{{ inputs.x_conversation_id }}/{{ inputs.x_document_id }}/ocr_result.json"
+    from: "{{ outputs.write_json_file.uri }}"
+
+  - id: notify_step_4
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": 40, "status": "OCR Completed & JSON Saved"}'
+
+  # ---------------------------------------------------------
+  # BƯỚC 5: Trích xuất Text & Minify (Sử dụng Python Script trong Kestra)
+  # ---------------------------------------------------------
+  - id: extract_and_minify_text
+    type: io.kestra.plugin.scripts.python.Script
+    runner: PROCESS
+    script: |
+      import json
+
+      # Lấy data từ bước trước do Kestra truyền vào
+      ocr_data = {{ outputs.call_ocr_service.body | json }}
+
+      # Trích xuất logic (Ghép nội dung của các element trong data)
+      raw_text = "\n".join([el["content"] for el in ocr_data.get("data", []) if el.get("content")])
+
+      # Minify cơ bản (Xóa khoảng trắng thừa, nén dòng)
+      minified_text = " ".join(raw_text.split())
+
+      # In ra để Kestra đẩy vào outputs
+      print(minified_text)
+
+  # ---------------------------------------------------------
+  # BƯỚC 6: Gọi LLM (Qwen) chuẩn hóa sang Markdown
+  # ---------------------------------------------------------
+  - id: llm_markdown_normalization
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ vars.llm_text_url }}"
+    method: POST
+    contentType: application/json
+    body: |
+      {
+        "model": "Qwen/Qwen3.5-2B",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Bạn là một trợ lý AI. Hãy OCR chuyển nội dung đã minify dưới đây về mã markdown(với # ở các đầu mục), yêu cầu đánh đúng level của các đầu mục"
+          },
+          {
+            "role": "user",
+            "content": {{ outputs.extract_and_minify_text.stdOut | json }}
+          }
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.3,
+        "stream": false
+      }
+
+  # Lưu kết quả Markdown vào MinIO
+  - id: write_markdown_file
+    type: io.kestra.plugin.core.storage.Write
+    content: "{{ outputs.llm_markdown_normalization.body }}"
+    extension: ".md"
+
+  - id: save_markdown_to_minio
+    type: io.kestra.plugin.minio.Upload
+    endpoint: "{{ vars.minio_endpoint }}"
+    accessKeyId: "{{ vars.minio_ak }}"
+    secretKeyId: "{{ vars.minio_sk }}"
+    bucket: "{{ vars.minio_bucket }}"
+    key: "{{ inputs.x_user_id }}/{{ inputs.x_conversation_id }}/{{ inputs.x_document_id }}/normalized.md"
+    from: "{{ outputs.write_markdown_file.uri }}"
+
+  - id: notify_step_6
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": 75, "status": "LLM Markdown Normalization Done"}'
+
+  # ---------------------------------------------------------
+  # BƯỚC 7: Chunking & Đẩy vào Qdrant
+  # ---------------------------------------------------------
+  - id: chunk_and_push_qdrant
+    type: io.kestra.plugin.core.http.Request
+    uri: "http://document-analyzer:8500/api/v1/index-document"
+    method: POST
+    contentType: multipart/form-data
+    timeout: PT10M
+    options:
+      readTimeout: PT10M
+    headers:
+      x-user-id: "{{ inputs.x_user_id }}"
+      x-conversation-id: "{{ inputs.x_conversation_id }}"
+      x-document-id: "{{ inputs.x_document_id }}"
+    formData:
+      text: "{{ outputs.llm_markdown_normalization.body.choices[0].message.content }}"
+
+  - id: notify_final
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": 100, "status": "Completed"}'
+
+# Xử lý khi luồng bị LỖI (Bắn thông báo về cho Client)
+errors:
+  - id: notify_error
+    type: io.kestra.plugin.core.http.Request
+    allowFailure: true
+    uri: "{{ vars.backend_webhook_url }}"
+    method: POST
+    contentType: application/json
+    body: '{"document_id": "{{ inputs.x_document_id }}", "progress": -1, "status": "FAILED", "error_stage": "{{ execution.failedTaskId }}"}'

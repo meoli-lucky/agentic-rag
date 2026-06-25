@@ -7,3 +7,6 @@ huggingface-hub
 minio==7.2.5
 opencv-python
 websockets
+sentence-transformers
+qdrant-client
+langchain-text-splitters

@@ -21,7 +21,6 @@ class LlmOcrService:
         else:
             image_url = image_input
 
-        # Cấu trúc body linh hoạt
         payload = {
             "model": self.model,
             "temperature": self.temperature,
@@ -39,11 +38,27 @@ class LlmOcrService:
             ]
         }
 
-        try:
-            # Phương thức POST mặc định
-            response = requests.post(self.api_url, json=payload, timeout=45)
-            response.raise_for_status() # Kiểm tra lỗi HTTP
-            return response.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            print(f"LLM OCR Error: {e}")
-            return None
+        max_retries = 3
+        timeout_seconds = 60
+        import time
+
+        for attempt in range(max_retries):
+            try:
+                print(f"[LLM OCR] Sending request to VLM API (attempt {attempt + 1}/{max_retries})...", flush=True)
+                response = requests.post(self.api_url, json=payload, timeout=timeout_seconds)
+                response.raise_for_status()
+                content = response.json()["choices"][0]["message"]["content"]
+                if content:
+                    return content
+                print(f"[LLM OCR] Attempt {attempt + 1}/{max_retries}: VLM API returned empty content.", flush=True)
+            except Exception as e:
+                print(f"[LLM OCR] Attempt {attempt + 1}/{max_retries} failed: {e}", flush=True)
+            
+            if attempt < max_retries - 1:
+                # Chờ tăng dần (exponential backoff) trước khi thử lại
+                sleep_time = (attempt + 1) * 2
+                print(f"[LLM OCR] Retrying in {sleep_time} seconds...", flush=True)
+                time.sleep(sleep_time)
+
+        print("[LLM OCR] All retry attempts failed or VLM returned empty content.", flush=True)
+        return ""
